@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Illustration Bounding Box Finder</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: system-ui, Arial, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f9f9f9;
+      color: #222;
+    }
+
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    p.subtitle { color: #555; margin-top: 0; margin-bottom: 20px; font-size: 0.95rem; }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+
+    label { font-weight: 600; display: block; margin-bottom: 6px; }
+
+    input[type="file"], input[type="number"], select, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 0.95rem;
+      margin-bottom: 10px;
+    }
+
+    textarea { height: 80px; resize: vertical; font-family: inherit; }
+
+    .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+    .row > * { flex: 1; min-width: 120px; }
+
+    button {
+      padding: 9px 20px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    #processBtn {
+      background: #FC540C;
+      color: #fff;
+      width: 100%;
+      padding: 11px;
+      font-size: 1rem;
+    }
+    #processBtn:disabled { background: #f0a07a; cursor: not-allowed; }
+
+    #prevPage, #nextPage {
+      background: #eee;
+      color: #333;
+      flex: 0 0 auto;
+    }
+
+    #status {
+      margin: 10px 0;
+      padding: 8px 12px;
+      border-radius: 5px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    #status.info  { background: #e8f0fe; color: #1a55cc; display: block; }
+    #status.error { background: #fdecea; color: #b31412; display: block; }
+    #status.ok    { background: #e6f4ea; color: #1e6b2e; display: block; }
+
+    #pagePreviewWrap {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #pagePreview {
+      max-width: 100%;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      display: none;
+    }
+
+    #canvasWrap {
+      overflow-x: auto;
+      margin-top: 16px;
+    }
+    #canvas {
+      display: none;
+      max-width: 100%;
+      height: auto;
+    }
+
+    #responseText {
+      background: #f4f4f4;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      padding: 12px;
+      font-size: 0.88rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+      display: none;
+      margin-top: 14px;
+    }
+
+    #boundingBoxImages { margin-top: 20px; }
+
+    .bbox-item {
+      margin-bottom: 18px;
+    }
+    .bbox-item p {
+      margin: 0 0 5px;
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+    .bbox-item img {
+      max-width: 100%;
+      border: 2px solid #ccc;
+      border-radius: 4px;
+      display: block;
+    }
+
+    #pageInfo { font-size: 0.9rem; color: #555; text-align: center; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+<h1>PDF Illustration Bounding Box Finder</h1>
+<p class="subtitle">Load a PDF, pick a page, then ask Gemini to locate illustrations and return their bounding boxes.</p>
+
+<!-- Step 1: PDF & API key -->
+<div class="card">
+  <label for="pdfInput">1. Select a PDF file</label>
+  <input type="file" id="pdfInput" accept="application/pdf">
+
+  <label for="apiKeyInput">Gemini API key</label>
+  <input type="password" id="apiKeyInput" placeholder="Stored in localStorage">
+
+  <label for="modelSelect">Model</label>
+  <select id="modelSelect">
+    <option value="gemini-2.5-flash">gemini-2.5-flash (default)</option>
+    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+    <option value="gemini-1.5-pro-latest">gemini-1.5-pro-latest</option>
+    <option value="gemini-1.5-flash-latest">gemini-1.5-flash-latest</option>
+  </select>
+</div>
+
+<!-- Step 2: Page selector -->
+<div class="card" id="pageCard" style="display:none">
+  <label>2. Choose a page</label>
+  <div class="row">
+    <button id="prevPage">&#8592; Prev</button>
+    <input type="number" id="pageNum" value="1" min="1" style="text-align:center;">
+    <button id="nextPage">Next &#8594;</button>
+  </div>
+  <div id="pageInfo"></div>
+  <div id="pagePreviewWrap">
+    <img id="pagePreview" alt="Page preview">
+  </div>
+</div>
+
+<!-- Step 3: Prompt & submit -->
+<div class="card" id="promptCard" style="display:none">
+  <label for="promptInput">3. Prompt for Gemini</label>
+  <textarea id="promptInput">Identify all illustrations, figures, diagrams, charts, photos, or non-text visual elements on this page. Return their bounding boxes as a JSON array of [ymin, xmin, ymax, xmax] arrays, where coordinates are normalised to 0–1000. Example: [[120, 50, 400, 950], [600, 200, 900, 800]]</textarea>
+  <button id="processBtn">Find illustrations</button>
+</div>
+
+<div id="status"></div>
+
+<!-- Results -->
+<div id="resultsCard" class="card" style="display:none">
+  <label>Results</label>
+  <div id="canvasWrap"><canvas id="canvas"></canvas></div>
+  <div id="responseText"></div>
+  <div id="boundingBoxImages"></div>
+</div>
+
+<script type="module">
+  // ----- PDF.js worker -----
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  // ----- State -----
+  let pdfDoc = null;
+  let currentPage = 1;
+  let currentPageImageFile = null; // File object for the rendered page
+
+  // ----- Elements -----
+  const pdfInput     = document.getElementById('pdfInput');
+  const apiKeyInput  = document.getElementById('apiKeyInput');
+  const modelSelect  = document.getElementById('modelSelect');
+  const pageCard     = document.getElementById('pageCard');
+  const promptCard   = document.getElementById('promptCard');
+  const pageNumInput = document.getElementById('pageNum');
+  const pageInfo     = document.getElementById('pageInfo');
+  const pagePreview  = document.getElementById('pagePreview');
+  const prevBtn      = document.getElementById('prevPage');
+  const nextBtn      = document.getElementById('nextPage');
+  const promptInput  = document.getElementById('promptInput');
+  const processBtn   = document.getElementById('processBtn');
+  const statusEl     = document.getElementById('status');
+  const resultsCard  = document.getElementById('resultsCard');
+  const canvas       = document.getElementById('canvas');
+  const responseText = document.getElementById('responseText');
+  const bboxImages   = document.getElementById('boundingBoxImages');
+
+  // ----- Restore API key -----
+  const savedKey = localStorage.getItem('GEMINI_API_KEY');
+  if (savedKey) apiKeyInput.value = savedKey;
+
+  // ----- Load PDF -----
+  pdfInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setStatus('Loading PDF…', 'info');
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      currentPage = 1;
+      pageNumInput.max = pdfDoc.numPages;
+      pageNumInput.value = 1;
+      pageCard.style.display = 'block';
+      promptCard.style.display = 'block';
+      await renderPage(currentPage);
+      setStatus(`PDF loaded — ${pdfDoc.numPages} page(s).`, 'ok');
+    } catch (err) {
+      setStatus(`Failed to load PDF: ${err.message}`, 'error');
+    }
+  });
+
+  // ----- Page navigation -----
+  prevBtn.addEventListener('click', () => changePage(currentPage - 1));
+  nextBtn.addEventListener('click', () => changePage(currentPage + 1));
+  pageNumInput.addEventListener('change', () => changePage(parseInt(pageNumInput.value, 10)));
+
+  function changePage(n) {
+    if (!pdfDoc) return;
+    n = Math.max(1, Math.min(n, pdfDoc.numPages));
+    currentPage = n;
+    pageNumInput.value = n;
+    renderPage(n);
+  }
+
+  async function renderPage(pageNum) {
+    const page = await pdfDoc.getPage(pageNum);
+    const targetWidth = 1000;
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = targetWidth / viewport.width;
+    const scaledViewport = page.getViewport({ scale });
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width  = scaledViewport.width;
+    offscreen.height = scaledViewport.height;
+    await page.render({ canvasContext: offscreen.getContext('2d'), viewport: scaledViewport }).promise;
+
+    // Convert to blob → File for Gemini
+    const blob = await new Promise(res => offscreen.toBlob(res, 'image/jpeg', 0.85));
+    currentPageImageFile = new File([blob], `page-${pageNum}.jpg`, { type: 'image/jpeg' });
+
+    // Show preview
+    pagePreview.src = offscreen.toDataURL('image/jpeg');
+    pagePreview.style.display = 'block';
+    pageInfo.textContent = `Page ${pageNum} of ${pdfDoc.numPages}  (${offscreen.width} × ${offscreen.height} px)`;
+  }
+
+  // ----- Submit to Gemini -----
+  processBtn.addEventListener('click', async () => {
+    const apiKey = apiKeyInput.value.trim();
+    if (!apiKey) { setStatus('Please enter a Gemini API key.', 'error'); return; }
+    if (!currentPageImageFile) { setStatus('Please load a PDF and select a page first.', 'error'); return; }
+
+    localStorage.setItem('GEMINI_API_KEY', apiKey);
+
+    processBtn.disabled = true;
+    setStatus('Sending page to Gemini…', 'info');
+    resultsCard.style.display = 'none';
+    bboxImages.innerHTML = '';
+    responseText.style.display = 'none';
+    canvas.style.display = 'none';
+
+    try {
+      const { GoogleGenerativeAI } = await import('https://esm.run/@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: modelSelect.value });
+
+      const imagePart = await fileToGenerativePart(currentPageImageFile);
+      const result = await model.generateContent([promptInput.value, imagePart]);
+      const text = result.response.text();
+
+      responseText.textContent = text;
+      responseText.style.display = 'block';
+
+      const coordinates = extractCoordinates(text);
+      if (coordinates.length > 0) {
+        setStatus(`Found ${coordinates.length} bounding box(es).`, 'ok');
+        drawBoundingBoxes(currentPageImageFile, coordinates);
+      } else {
+        setStatus('No bounding boxes found in response.', 'info');
+      }
+
+      resultsCard.style.display = 'block';
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, 'error');
+    } finally {
+      processBtn.disabled = false;
+    }
+  });
+
+  // ----- Helpers -----
+  function fileToGenerativePart(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve({
+        inlineData: { data: reader.result.split(',')[1], mimeType: file.type }
+      });
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function extractCoordinates(text) {
+    const regex = /\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]/g;
+    return (text.match(regex) || []).map(JSON.parse);
+  }
+
+  function drawBoundingBoxes(file, coordinates) {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const image = new Image();
+      image.onload = () => {
+        const MARGIN_LEFT = 80;
+        const MARGIN_TOP  = 20;
+        const MARGIN_BOTTOM = 50;
+
+        canvas.width  = image.width  + MARGIN_LEFT + 20;
+        canvas.height = image.height + MARGIN_TOP  + MARGIN_BOTTOM;
+        const ctx = canvas.getContext('2d');
+
+        ctx.drawImage(image, MARGIN_LEFT, MARGIN_TOP);
+
+        // Grid
+        ctx.strokeStyle = 'rgba(255,0,0,0.3)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 1000; i += 100) {
+          const x = MARGIN_LEFT + (i / 1000) * image.width;
+          ctx.beginPath(); ctx.moveTo(x, MARGIN_TOP); ctx.lineTo(x, MARGIN_TOP + image.height); ctx.stroke();
+          const y = MARGIN_TOP + (i / 1000) * image.height;
+          ctx.beginPath(); ctx.moveTo(MARGIN_LEFT, y); ctx.lineTo(MARGIN_LEFT + image.width, y); ctx.stroke();
+        }
+
+        const COLORS = ['#FF3333','#33CC33','#3399FF','#FFCC00','#FF33FF','#33FFFF','#FF9900','#9933FF'];
+
+        bboxImages.innerHTML = '';
+
+        coordinates.forEach((box, idx) => {
+          const [ymin, xmin, ymax, xmax] = box.map(c => c / 1000);
+          const rx = MARGIN_LEFT + xmin * image.width;
+          const ry = MARGIN_TOP  + ymin * image.height;
+          const rw = (xmax - xmin) * image.width;
+          const rh = (ymax - ymin) * image.height;
+
+          const color = COLORS[idx % COLORS.length];
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3;
+          ctx.strokeRect(rx, ry, rw, rh);
+
+          // Label badge
+          const label = `#${idx + 1}`;
+          ctx.font = 'bold 14px Arial';
+          const tw = ctx.measureText(label).width + 8;
+          ctx.fillStyle = color;
+          ctx.fillRect(rx, ry - 20, tw, 20);
+          ctx.fillStyle = '#fff';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, rx + 4, ry - 10);
+
+          // Crop thumbnail
+          const thumb = document.createElement('canvas');
+          thumb.width  = Math.max(1, Math.round(rw));
+          thumb.height = Math.max(1, Math.round(rh));
+          thumb.getContext('2d').drawImage(image, xmin * image.width, ymin * image.height, rw, rh, 0, 0, thumb.width, thumb.height);
+
+          const item = document.createElement('div');
+          item.className = 'bbox-item';
+
+          const title = document.createElement('p');
+          title.style.color = color;
+          title.textContent = `Illustration ${idx + 1} — [ymin=${box[0]}, xmin=${box[1]}, ymax=${box[2]}, xmax=${box[3]}]`;
+          item.appendChild(title);
+
+          const img = document.createElement('img');
+          img.src = thumb.toDataURL('image/jpeg');
+          item.appendChild(img);
+
+          bboxImages.appendChild(item);
+        });
+
+        // Axes
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.font = '12px Arial';
+        ctx.fillStyle = '#333';
+
+        // Y-axis
+        ctx.beginPath(); ctx.moveTo(MARGIN_LEFT, MARGIN_TOP); ctx.lineTo(MARGIN_LEFT, MARGIN_TOP + image.height); ctx.stroke();
+        ctx.textAlign = 'right';
+        for (let i = 0; i <= 1000; i += 100) {
+          const y = MARGIN_TOP + (i / 1000) * image.height;
+          ctx.fillText(i, MARGIN_LEFT - 4, y + 4);
+          ctx.beginPath(); ctx.moveTo(MARGIN_LEFT - 4, y); ctx.lineTo(MARGIN_LEFT, y); ctx.stroke();
+        }
+
+        // X-axis
+        ctx.beginPath(); ctx.moveTo(MARGIN_LEFT, MARGIN_TOP + image.height); ctx.lineTo(MARGIN_LEFT + image.width, MARGIN_TOP + image.height); ctx.stroke();
+        ctx.textAlign = 'center';
+        for (let i = 0; i <= 1000; i += 100) {
+          const x = MARGIN_LEFT + (i / 1000) * image.width;
+          ctx.fillText(i, x, MARGIN_TOP + image.height + 16);
+          ctx.beginPath(); ctx.moveTo(x, MARGIN_TOP + image.height); ctx.lineTo(x, MARGIN_TOP + image.height + 5); ctx.stroke();
+        }
+
+        canvas.style.display = 'block';
+      };
+      image.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function setStatus(msg, type) {
+    statusEl.textContent = msg;
+    statusEl.className = type;
+  }
+</script>
+</body>
+</html>
